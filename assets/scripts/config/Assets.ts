@@ -18,6 +18,10 @@ export class Assets {
     static cta: SpriteFrame | null = null;
     /** Логотип/иконка на пекшоте. */
     static logo: SpriteFrame | null = null;
+    /** Подложка прогресс-бара. */
+    static progressBg: SpriteFrame | null = null;
+    /** Заливка прогресс-бара (рисуется как FILLED-спрайт, тянется по прогрессу). */
+    static progressFill: SpriteFrame | null = null;
     /** Звук лопания. */
     static popSound: AudioClip | null = null;
 }

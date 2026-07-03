@@ -32,6 +32,10 @@ export class Game extends Component {
     ctaSprite: SpriteFrame | null = null;
     @property({ type: SpriteFrame, tooltip: 'Логотип/иконка на пекшоте' })
     logoSprite: SpriteFrame | null = null;
+    @property({ type: SpriteFrame, tooltip: 'Подложка прогресс-бара' })
+    progressBgSprite: SpriteFrame | null = null;
+    @property({ type: SpriteFrame, tooltip: 'Заливка прогресс-бара (FILLED)' })
+    progressFillSprite: SpriteFrame | null = null;
     @property({ type: AudioClip, tooltip: 'Звук лопания' })
     popSound: AudioClip | null = null;
 
@@ -81,6 +85,8 @@ export class Game extends Component {
         Assets.splashPrefab = this.splashPrefab;
         Assets.cta = this.ctaSprite;
         Assets.logo = this.logoSprite;
+        Assets.progressBg = this.progressBgSprite;
+        Assets.progressFill = this.progressFillSprite;
         Assets.popSound = this.popSound;
 
         this.audio = this.node.addComponent(AudioSource);
@@ -112,8 +118,16 @@ export class Game extends Component {
         this.hud = new Hud(this.node, this.W, this.H);
         this.packshot = new Packshot(this.node, this.W, this.H);
 
-        this.spawnInitial();
+        // Пусковой шар создаём ДО спавна поля — чтобы он гарантированно был,
+        // даже если что-то в спавне пойдёт не так. Цвет умеет браться при пустом поле.
         this.buildLauncher();
+        this.spawnInitial();
+
+        // поле готово — берём цвета из него (гарантия, что есть что лопать)
+        this.currentColor = this.pickFieldColor();
+        this.nextColor = this.pickFieldColor();
+        this.launcher.setColorIndex(this.currentColor);
+        this.nextPreview.setColorIndex(this.nextColor);
 
         this.node.on(Node.EventType.TOUCH_START, this.onTouchStart, this);
         this.node.on(Node.EventType.TOUCH_MOVE, this.onTouchMove, this);
@@ -174,34 +188,54 @@ export class Game extends Component {
 
     private spawnInitial() {
         for (let i = 0; i < CFG.initialClusters; i++) {
-            const y = this.top - i * (CFG.bubbleRadius * 2.2) - CFG.bubbleRadius;
+            const y = this.top - i * (CFG.bubbleRadius * CFG.initialRowGap) - CFG.bubbleRadius;
             this.spawnCluster(y);
         }
     }
 
+    /** Свободна ли точка от шаров ДРУГИХ кучек (уже стоящих на поле). */
+    private isFreeOfForeign(x: number, y: number, minDist: number): boolean {
+        for (const b of this.bubbles) {
+            if (!b.alive) continue;
+            if (Math.hypot(b.pos.x - x, b.pos.y - y) < minDist) return false;
+        }
+        return true;
+    }
+
     private spawnCluster(atY?: number) {
         if (this.bubbles.length >= CFG.maxBubbles) return;
+        const r = CFG.bubbleRadius;
+        const foreign = r * CFG.foreignGap;
+        const cy = atY !== undefined ? atY : this.top;
+
+        // Ищем свободный центр (не над чужими шарами). Если места нет — пропускаем спавн.
+        let cx = 0, found = false;
+        for (let t = 0; t < 20; t++) {
+            const tryX = math.randomRange(this.left + r, this.right - r);
+            if (this.isFreeOfForeign(tryX, cy, foreign)) { cx = tryX; found = true; break; }
+        }
+        if (!found) return;
+
         const colorIndex = math.randomRangeInt(0, BUBBLE_COLORS.length);
         const count = math.randomRangeInt(CFG.clusterMin, CFG.clusterMax + 1);
-        const cx = math.randomRange(this.left + CFG.bubbleRadius, this.right - CFG.bubbleRadius);
-        const cy = atY !== undefined ? atY : this.top;
-        const r = CFG.bubbleRadius;
 
-        // Органический «блоб»: каждый следующий шар лепим вплотную к случайному
-        // уже поставленному под случайным углом. Плотно + хаотично + связно.
+        // Органический «блоб»: следующий шар лепим вплотную к случайному уже
+        // поставленному в ЭТОЙ кучке, но не поверх чужих кучек.
         const pts: { x: number; y: number }[] = [{ x: cx, y: cy }];
         for (let i = 1; i < count; i++) {
-            let x = cx, y = cy;
-            for (let tries = 0; tries < 8; tries++) {
+            for (let tries = 0; tries < 12; tries++) {
                 const base = pts[math.randomRangeInt(0, pts.length)];
                 const ang = math.randomRange(0, Math.PI * 2);
                 const dist = r * math.randomRange(CFG.clusterPackMin, CFG.clusterPackMax);
-                x = math.clamp(base.x + Math.cos(ang) * dist, this.left, this.right);
-                y = base.y + Math.sin(ang) * dist;
-                // не сажаем поверх уже стоящего в этой кучке
-                if (pts.every((p) => Math.hypot(p.x - x, p.y - y) >= r * 1.4)) break;
+                const x = math.clamp(base.x + Math.cos(ang) * dist, this.left, this.right);
+                const y = base.y + Math.sin(ang) * dist;
+                const okSiblings = pts.every((p) => Math.hypot(p.x - x, p.y - y) >= r * 1.4);
+                if (okSiblings && this.isFreeOfForeign(x, y, foreign)) {
+                    pts.push({ x, y });
+                    break;
+                }
+                // не нашли место за 12 попыток → этот шар пропускаем (кучка меньше)
             }
-            pts.push({ x, y });
         }
 
         for (const p of pts) {
@@ -462,24 +496,36 @@ export class Game extends Component {
     }
 
     private popGroup(group: Bubble[], combo: number) {
-        let cx = 0, cy = 0;
         const color = BUBBLE_COLORS[group[0].colorIndex];
-        for (const b of group) {
-            cx += b.pos.x; cy += b.pos.y;
-            Fx.splash(b.pos.x, b.pos.y, color, CFG.bubbleRadius * 1.2);
-            b.destroy();
-        }
-        cx /= group.length; cy /= group.length;
 
-        this.playPop(combo);
+        // Сразу «забираем» шары с поля: не таргетятся снарядом и не спускаются,
+        // пока лопаются по очереди. Ноды живут до своей очереди в цепочке.
+        for (const b of group) b.alive = false;
         this.bubbles = this.bubbles.filter((b) => b.alive);
 
-        const gained = group.length * CFG.scorePerBubble * combo;
+        // Очки считаем сразу (иначе победа среагирует раньше, чем добежит анимация).
+        let base = 0, cx = 0, cy = 0;
+        for (const b of group) {
+            base += Math.round(math.randomRange(CFG.scorePerBubbleMin, CFG.scorePerBubbleMax));
+            cx += b.pos.x; cy += b.pos.y;
+        }
+        cx /= group.length; cy /= group.length;
+        const gained = base * combo;
         this.score += gained;
-        this.hud.addPopped(group.length);
+        this.hud.setScore(this.score);
         this.hud.setProgress(this.score);
+        this.playPop(combo);
 
-        this.addShake(combo >= CFG.hitstopComboThreshold ? CFG.shakeBig : CFG.shakeSmall);
+        // Взрыв — по ЦЕПОЧКЕ: BFS-порядок = волна от точки попадания наружу.
+        group.forEach((b, i) => {
+            const node = b.node;
+            const px = b.pos.x, py = b.pos.y;   // шары заморожены — позиция не изменится
+            this.scheduleOnce(() => {
+                Fx.splash(px, py, color, CFG.bubbleRadius * 1.2);
+                this.addShake(i === 0 && combo >= CFG.hitstopComboThreshold ? CFG.shakeBig : CFG.shakeSmall);
+                if (node && node.isValid) node.destroy();
+            }, i * CFG.chainPopDelay);
+        });
 
         if (combo >= 2) {
             Fx.popup(cx, cy, `x${combo} COMBO!`, new Color(255, 255, 255, 255), true);

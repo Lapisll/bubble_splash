@@ -32,8 +32,8 @@ export class Fx {
                 ps.endColor = new Color(color.r, color.g, color.b, 0);
                 ps.resetSystem();
             }
-            // авто-очистка
-            tween(n).delay(1.5).call(() => n.isValid && n.destroy()).start();
+            // авто-очистка (с запасом под долгую Life частиц)
+            tween(n).delay(2.5).call(() => n.isValid && n.destroy()).start();
         } else {
             Fx.burst(x, y, color, 14);
             Fx.shockwave(x, y, color, radius);
