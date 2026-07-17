@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 560 180" width="560" height="180">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#D2FF6E"/>
+      <stop offset="0.5" stop-color="#B4FF39"/>
+      <stop offset="1" stop-color="#93E61F"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <filter id="glow" x="-40%" y="-60%" width="180%" height="220%">
+      <feGaussianBlur stdDeviation="14" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- внешнее неон-свечение -->
+  <rect x="28" y="25" width="504" height="130" rx="40" ry="40"
+        fill="#B4FF39" opacity="0.35" filter="url(#glow)"/>
+
+  <!-- тело кнопки -->
+  <rect x="28" y="25" width="504" height="130" rx="34" ry="34" fill="url(#body)"/>
+  <!-- обводка -->
+  <rect x="28" y="25" width="504" height="130" rx="34" ry="34"
+        fill="none" stroke="#EAFFC0" stroke-width="3" opacity="0.85"/>
+  <!-- верхний глянец -->
+  <rect x="46" y="38" width="468" height="52" rx="26" ry="26" fill="url(#gloss)"/>
+
+  <!-- надпись -->
+  <text x="272" y="103" text-anchor="middle"
+        font-family="Arial, Helvetica, sans-serif" font-weight="bold"
+        font-size="52" fill="#0B0B2A" letter-spacing="2">PLAY NOW</text>
+  <!-- стрелка ▶ -->
+  <path d="M476 68 L504 90 L476 112 Z" fill="#0B0B2A"/>
+</svg>

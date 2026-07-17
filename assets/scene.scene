@@ -717,11 +717,30 @@
       "__uuid__": "656009be-b0ed-4bfb-b2b0-36b14b67a511",
       "__expectedType__": "cc.AudioClip"
     },
+    "shootSound": {
+      "__uuid__": "150db92e-b582-4f46-b507-abb94d150507",
+      "__expectedType__": "cc.AudioClip"
+    },
+    "bombSound": {
+      "__uuid__": "7ed37209-ae38-4278-915b-ca7d4ebbf620",
+      "__expectedType__": "cc.AudioClip"
+    },
+    "stickSound": {
+      "__uuid__": "eb63213a-2c4a-4821-8ac1-22ecc3149a7e",
+      "__expectedType__": "cc.AudioClip"
+    },
+    "cascadeSound": {
+      "__uuid__": "109a833f-61c9-4158-a193-61fcdca734f6",
+      "__expectedType__": "cc.AudioClip"
+    },
     "music": {
       "__uuid__": "a1bbf813-1f9d-4e79-a1eb-aef48816fad3",
       "__expectedType__": "cc.AudioClip"
     },
-    "winSound": null,
+    "winSound": {
+      "__uuid__": "a5063e9d-9857-4683-9bab-0ecd2644e73e",
+      "__expectedType__": "cc.AudioClip"
+    },
     "bgNode": {
       "__id__": 15
     },

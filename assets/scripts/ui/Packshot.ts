@@ -26,6 +26,9 @@ export class Packshot {
     private gleamW = 0;
     private shown = false;
 
+    /** Колбэк на момент glitch-появления CTA (Game вешает сюда win-звук). */
+    onCtaReveal?: () => void;
+
     constructor(parent: Node, canvasW: number, canvasH: number) {
         this.canvasW = canvasW;
         this.canvasH = canvasH;
@@ -169,6 +172,10 @@ export class Packshot {
         this.shown = true;
         this.root.active = true;
 
+        // мощный глитч прямо на появлении окна (больше смещения и полос) + win-звук
+        if (this.onCtaReveal) this.onCtaReveal();
+        this.glitchWindow(() => {}, 1.8, 16);
+
         const cH = this.canvasH;
         const s = CFG.pkStagger;
 
@@ -188,17 +195,24 @@ export class Packshot {
         // Слоган: проявление
         tween(this.subNode.getComponent(UIOpacity)!)
             .delay(s * 2).to(0.3, { opacity: 255 }).start();
-        // Кнопка: pop, затем «дыхание» + gleam
-        this.enterScale(this.btnNode, s * 3, () => {
-            tween(this.btnNode)
-                .to(0.7, { scale: new Vec3(1.06, 1.06, 1) }, { easing: 'sineInOut' })
-                .to(0.7, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
-                .union().repeatForever().start();
-            this.startGleam();
-        });
+        // Кнопка скрыта; через pkCtaDelay ВСЁ ОКНО пекшота глитчит, и CTA
+        // появляется внутри этого глитча. Затем «дыхание» + gleam + win-звук.
+        const btnOp = this.btnNode.getComponent(UIOpacity) || this.btnNode.addComponent(UIOpacity);
+        btnOp.opacity = 0;
+        tween(this.btnNode).delay(CFG.pkCtaDelay).call(() => {
+            btnOp.opacity = 255;                            // CTA проявляется внутри глитча окна
+            this.btnNode.setScale(1, 1, 1);
+            this.glitchWindow(() => {
+                tween(this.btnNode)
+                    .to(0.7, { scale: new Vec3(1.06, 1.06, 1) }, { easing: 'sineInOut' })
+                    .to(0.7, { scale: new Vec3(1, 1, 1) }, { easing: 'sineInOut' })
+                    .union().repeatForever().start();
+                this.startGleam();
+            });
+        }).start();
 
-        // Залп конфетти
-        this.burstConfetti();
+        // Залп пузырей снизу вверх
+        this.burstBubbles();
     }
 
     /** Появление узла «сверху вниз» с отскоком + проявлением. */
@@ -238,6 +252,74 @@ export class Packshot {
         tween(this.gleamNode).delay(CFG.pkShineTime).call(run).union().repeatForever().start();
     }
 
+    /**
+     * Glitch всего окна пекшота: рваные скачки прозрачности + сдвиг ВСЕГО root по X + полосы.
+     * @param amp множитель силы смещения, @param barCount сколько глитч-полос.
+     */
+    private glitchWindow(onDone: () => void = () => {}, amp = 1, barCount = 8) {
+        const rootOp = this.root.getComponent(UIOpacity) || this.root.addComponent(UIOpacity);
+
+        // дискретные «кадры» — резкие скачки читаются как глитч (не плавный твин)
+        const frames = [
+            { o: 210, dx: -26 },
+            { o: 40, dx: 22 },
+            { o: 235, dx: 15 },
+            { o: 70, dx: -24 },
+            { o: 255, dx: 12 },
+            { o: 120, dx: -14 },
+            { o: 255, dx: 7 },
+            { o: 95, dx: -5 },
+            { o: 255, dx: 0 },
+        ];
+        const dt = 0.045;
+        let seq = tween(this.root);
+        for (const f of frames) {
+            seq = seq.call(() => {
+                rootOp.opacity = f.o;
+                this.root.setPosition(f.dx * amp, 0, 0);
+            }).delay(dt);
+        }
+        seq.call(() => {
+            rootOp.opacity = 255;
+            this.root.setPosition(0, 0, 0);
+            onDone();
+        }).start();
+
+        this.glitchBars(barCount);
+    }
+
+    /** Полноэкранные цветные «глитч-полосы» по всему окну (chromatic-вспышки). */
+    private glitchBars(count: number) {
+        const colors = [
+            new Color(0, 240, 255, 200),    // cyan
+            new Color(255, 46, 159, 200),   // magenta
+            new Color(255, 255, 255, 180),  // white
+        ];
+        const halfH = this.canvasH / 2;
+        for (let i = 0; i < count; i++) {
+            const n = new Node('glitchBar');
+            this.root.addChild(n);
+            n.addComponent(UITransform);
+            const g = n.addComponent(Graphics);
+            const w = this.canvasW * math.randomRange(0.4, 1.0);
+            const h = math.randomRange(3, 16);
+            g.fillColor = colors[i % colors.length];
+            g.rect(-w / 2, -h / 2, w, h);
+            g.fill();
+            n.setPosition(math.randomRange(-40, 40), math.randomRange(-halfH, halfH), 0);
+
+            const op = n.addComponent(UIOpacity);
+            op.opacity = 0;
+            tween(n)
+                .delay(math.randomRange(0.02, 0.3))
+                .call(() => (op.opacity = 210)).delay(0.05)
+                .call(() => (op.opacity = 0)).delay(0.04)
+                .call(() => (op.opacity = 160)).delay(0.05)
+                .call(() => n.isValid && n.destroy())
+                .start();
+        }
+    }
+
     /** Фоновый дождь неон-пузырей, поднимающихся снизу вверх (loop). */
     private startBubbleRain() {
         const halfW = this.canvasW / 2;
@@ -268,36 +350,68 @@ export class Packshot {
         }
     }
 
-    /** Стартовый залп конфетти из-за верхнего края. */
-    private burstConfetti() {
+    /** Стартовый залп: крупные неон-пузыри вылетают снизу вверх и лопаются как кластеры. */
+    private burstBubbles() {
         const halfW = this.canvasW / 2;
-        const topY = this.canvasH / 2;
-        for (let i = 0; i < CFG.pkConfettiCount; i++) {
-            const n = new Node('cf');
+        const halfH = this.canvasH / 2;
+        for (let i = 0; i < CFG.pkBurstCount; i++) {
+            const n = new Node('burst');
             this.root.addChild(n);
             n.addComponent(UITransform);
             const g = n.addComponent(Graphics);
             const c = BUBBLE_COLORS[math.randomRangeInt(0, BUBBLE_COLORS.length)];
-            const w = math.randomRange(8, 16);
-            const h = math.randomRange(12, 22);
-            g.fillColor = new Color(c.r, c.g, c.b, 255);
-            g.rect(-w / 2, -h / 2, w, h);
+            const r = math.randomRange(CFG.pkBurstRMin, CFG.pkBurstRMax);
+            g.fillColor = new Color(c.r, c.g, c.b, 130);        // тело
+            g.circle(0, 0, r);
+            g.fill();
+            g.fillColor = new Color(255, 255, 255, 70);         // блик
+            g.circle(-r * 0.3, r * 0.3, r * 0.26);
             g.fill();
 
             const sx = math.randomRange(-halfW, halfW);
-            n.setPosition(sx, topY + math.randomRange(0, 120), 0);
-            n.angle = math.randomRange(0, 360);
+            n.setPosition(sx, -halfH - r, 0);                   // старт из-под нижнего края
 
-            const op = n.addComponent(UIOpacity);
-            const fall = math.randomRange(1.4, 2.6);
-            const ex = sx + math.randomRange(-120, 120);
-            const ey = -topY - 60;
+            // всплывает до точки НА экране, чуть «набухает» и лопается осколками
+            const ey = math.randomRange(-halfH * 0.15, halfH * 0.85);
+            const ex = sx + math.randomRange(-70, 70);
+            const dur = math.randomRange(1.2, 2.4);
+            const delay = math.randomRange(0, CFG.pkBurstSpread); // разброс старта — сглаживаем пик частиц
             tween(n)
-                .to(fall, { position: new Vec3(ex, ey, 0) }, { easing: 'quadIn' })
-                .call(() => n.isValid && n.destroy())
+                .delay(delay)
+                .to(dur, { position: new Vec3(ex, ey, 0) }, { easing: 'quadOut' })
+                .to(0.1, { scale: new Vec3(1.25, 1.25, 1) }, { easing: 'quadOut' })
+                .call(() => {
+                    this.popBubble(ex, ey, c, r);
+                    if (n.isValid) n.destroy();
+                })
                 .start();
-            tween(n).by(fall, { angle: math.randomRange(-360, 360) }).start();
-            tween(op).delay(fall * 0.6).to(fall * 0.4, { opacity: 0 }).start();
+        }
+    }
+
+    /** Локальный «лоп» пузыря на пекшоте (поверх затемнения): разлёт осколков. */
+    private popBubble(x: number, y: number, color: Color, r: number) {
+        for (let k = 0; k < CFG.pkPopShards; k++) {
+            const p = new Node('shard');
+            this.root.addChild(p);
+            p.addComponent(UITransform);
+            const g = p.addComponent(Graphics);
+            g.fillColor = new Color(color.r, color.g, color.b, 255);
+            g.circle(0, 0, math.randomRange(3, 7));
+            g.fill();
+            p.setPosition(x, y, 0);
+
+            const op = p.addComponent(UIOpacity);
+            const ang = math.randomRange(0, Math.PI * 2);
+            const dist = math.randomRange(r * 0.6, r * 1.7);
+            const tx = x + Math.cos(ang) * dist;
+            const ty = y + Math.sin(ang) * dist;
+            const d = math.randomRange(0.3, 0.55);
+            tween(p)
+                .to(d, { position: new Vec3(tx, ty, 0), scale: new Vec3(0.2, 0.2, 0.2) },
+                    { easing: 'quadOut' })
+                .call(() => p.isValid && p.destroy())
+                .start();
+            tween(op).delay(d * 0.4).to(d * 0.6, { opacity: 0 }).start();
         }
     }
 

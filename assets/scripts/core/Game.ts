@@ -48,6 +48,14 @@ export class Game extends Component {
     popSound: AudioClip | null = null;
     @property({ type: AudioClip, tooltip: 'Звук отскока снаряда от стен' })
     bounceSound: AudioClip | null = null;
+    @property({ type: AudioClip, tooltip: 'Звук выстрела шара' })
+    shootSound: AudioClip | null = null;
+    @property({ type: AudioClip, tooltip: 'Звук взрыва бомбы' })
+    bombSound: AudioClip | null = null;
+    @property({ type: AudioClip, tooltip: 'Звук прилипания шара к кластеру' })
+    stickSound: AudioClip | null = null;
+    @property({ type: AudioClip, tooltip: 'Звук финального каскада (победа)' })
+    cascadeSound: AudioClip | null = null;
     @property({ type: AudioClip, tooltip: 'Фоновая музыка (loop)' })
     music: AudioClip | null = null;
     @property({ type: AudioClip, tooltip: 'Джингл победы' })
@@ -120,6 +128,10 @@ export class Game extends Component {
         Assets.bomb = this.bombSprite;
         Assets.popSound = this.popSound;
         Assets.bounceSound = this.bounceSound;
+        Assets.shootSound = this.shootSound;
+        Assets.bombSound = this.bombSound;
+        Assets.stickSound = this.stickSound;
+        Assets.cascadeSound = this.cascadeSound;
         Assets.music = this.music;
         Assets.winSound = this.winSound;
 
@@ -159,6 +171,8 @@ export class Game extends Component {
 
         this.hud = new Hud(this.node, this.W, this.H);
         this.packshot = new Packshot(this.node, this.W, this.H);
+        // win-звук — в момент glitch-появления CTA (отложен на pkCtaDelay)
+        this.packshot.onCtaReveal = () => this.playClip(Assets.winSound, CFG.winVolume);
 
         // Пусковой шар создаём ДО спавна поля — чтобы он гарантированно был,
         // даже если что-то в спавне пойдёт не так.
@@ -441,6 +455,7 @@ export class Game extends Component {
         this.trailTimer = 0;
         this.state = State.FLYING;
         this.launcher.node.active = false;
+        this.playClip(Assets.shootSound, CFG.shootVolume);
     }
 
     private reload() {
@@ -564,7 +579,8 @@ export class Game extends Component {
         Fx.shockwave(hx, hy, new Color(255, 150, 60, 255), CFG.bombRadius);
         this.addShake(CFG.shakeBig);
         this.hitstop = CFG.hitstopBig;
-        Sfx.pop(Assets.popSound, 0.5, CFG.sfxVolume);
+        if (Assets.bombSound) this.playClip(Assets.bombSound, CFG.bombVolume);
+        else Sfx.pop(Assets.popSound, 0.5, CFG.sfxVolume);   // fallback: низкий «бум» из попа
 
         // осколки — волной от центра взрыва наружу, каждый своим цветом
         hits.sort((a, b) =>
@@ -601,6 +617,7 @@ export class Game extends Component {
 
         Fx.flash(sx, sy, CFG.bubbleRadius * 0.5);
         this.addShake(CFG.shakeSmall * 0.5);
+        this.playClip(Assets.stickSound, CFG.stickVolume);
         this.reload();
     }
 
@@ -728,7 +745,8 @@ export class Game extends Component {
         if (this.bgm && this.bgm.playing) {
             tween(this.bgm).to(0.5, { volume: CFG.musicVolume * CFG.musicDuckOnWin }).start();
         }
-        if (Assets.winSound) this.audio.playOneShot(Assets.winSound, CFG.winVolume);
+        this.playClip(Assets.cascadeSound, CFG.cascadeVolume);
+        // win-звук теперь играет вместе с появлением CTA (см. onCtaReveal у Packshot)
 
         const all = this.bubbles.slice();
         all.forEach((b, i) => {
@@ -777,6 +795,11 @@ export class Game extends Component {
 
     private playBounce() {
         if (Assets.bounceSound) this.audio.playOneShot(Assets.bounceSound, CFG.sfxVolume);
+    }
+
+    /** Безопасно проиграть one-shot клип (нет клипа → тишина). */
+    private playClip(clip: AudioClip | null, volume: number) {
+        if (clip) this.audio.playOneShot(clip, volume);
     }
 
     private startMusic() {

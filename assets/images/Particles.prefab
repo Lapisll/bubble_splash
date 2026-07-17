@@ -159,7 +159,7 @@
     "_custom": true,
     "_file": null,
     "_spriteFrame": {
-      "__uuid__": "d2781104-5a99-499d-84f3-abbf195d9d4e@f9941",
+      "__uuid__": "7d1cb188-e618-4c40-a98f-cf735015ebcf@f9941",
       "__expectedType__": "cc.SpriteFrame"
     },
     "_totalParticles": 42,
@@ -207,6 +207,7 @@
       "__id__": 0
     },
     "fileId": "edjrQnNCpDqL8rpkxWkvMs",
+    "instance": null,
     "targetOverrides": null
   }
 ]

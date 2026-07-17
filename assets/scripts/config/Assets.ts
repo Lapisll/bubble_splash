@@ -30,6 +30,14 @@ export class Assets {
     static popSound: AudioClip | null = null;
     /** Звук отскока снаряда от стен. */
     static bounceSound: AudioClip | null = null;
+    /** Звук выстрела шара из пушки. */
+    static shootSound: AudioClip | null = null;
+    /** Звук взрыва бомбы. */
+    static bombSound: AudioClip | null = null;
+    /** Звук прилипания снаряда к кластеру (чужой цвет). */
+    static stickSound: AudioClip | null = null;
+    /** Звук финального каскада (все кластеры лопаются на победе). */
+    static cascadeSound: AudioClip | null = null;
     /** Фоновая музыка (проигрывается в цикле). */
     static music: AudioClip | null = null;
     /** Джингл победы (играет при показе пекшота). */
