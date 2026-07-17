@@ -1,17 +1,21 @@
 import {
-    _decorator, Component, Node, Graphics, Sprite, UITransform, Widget, Color, Vec2, Vec3,
-    EventTouch, math, SpriteFrame, Prefab, AudioClip, AudioSource,
+    _decorator, Component, Node, Graphics, Sprite, UITransform, UIOpacity, Widget, Color, Vec2, Vec3,
+    EventTouch, math, tween, SpriteFrame, Prefab, AudioClip, AudioSource,
 } from 'cc';
 import { CFG, BUBBLE_COLORS, BG_TOP, BG_BOTTOM } from '../config/GameConfig';
 import { Assets } from '../config/Assets';
 import { Bubble } from '../entities/Bubble';
 import { Fx } from '../fx/Fx';
+import { Sfx } from '../fx/Sfx';
 import { Hud } from '../ui/Hud';
 import { Packshot } from '../ui/Packshot';
 
 const { ccclass, property } = _decorator;
 
 enum State { AIMING, FLYING, WON }
+
+/** Снаряд в очереди: цвет (0..N-1) или бомба. */
+const BOMB = -1;
 
 /**
  * Главный компонент. Вешается на Canvas.
@@ -36,10 +40,27 @@ export class Game extends Component {
     progressBgSprite: SpriteFrame | null = null;
     @property({ type: SpriteFrame, tooltip: 'Заливка прогресс-бара (FILLED)' })
     progressFillSprite: SpriteFrame | null = null;
+    @property({ type: [SpriteFrame], tooltip: 'Кадры анимации бомбы (по порядку). Приоритетнее одиночного спрайта.' })
+    bombFrames: SpriteFrame[] = [];
+    @property({ type: SpriteFrame, tooltip: 'Одиночный спрайт бомбы (fallback, если нет кадров)' })
+    bombSprite: SpriteFrame | null = null;
     @property({ type: AudioClip, tooltip: 'Звук лопания' })
     popSound: AudioClip | null = null;
+    @property({ type: AudioClip, tooltip: 'Звук отскока снаряда от стен' })
+    bounceSound: AudioClip | null = null;
+    @property({ type: AudioClip, tooltip: 'Фоновая музыка (loop)' })
+    music: AudioClip | null = null;
+    @property({ type: AudioClip, tooltip: 'Джингл победы' })
+    winSound: AudioClip | null = null;
 
-    private audio: AudioSource = null!;
+    // --- Node-слоты для видимости в редакторе (опц.) ---
+    @property({ type: Node, tooltip: 'Готовая нода фона в сцене (видна в редакторе). Задана → код свой фон не строит.' })
+    bgNode: Node | null = null;
+    @property({ type: Node, tooltip: 'Нода-превью пушки в сцене (видна в редакторе). Задаёт позицию пуска; в игре скрывается.' })
+    launcherNode: Node | null = null;
+
+    private audio: AudioSource = null!;    // SFX (one-shot fallback)
+    private bgm: AudioSource = null!;      // фоновая музыка (loop)
 
     // размеры канваса
     private W = 720;
@@ -56,12 +77,19 @@ export class Game extends Component {
     private projectile: Bubble | null = null;
 
     private launcher: Bubble = null!;
-    private nextPreview: Bubble = null!;
-    private currentColor = 0;
-    private nextColor = 0;
+    private previews: Bubble[] = [];   // очередь визуальных превью следующих снарядов
+    private queue: number[] = [];      // очередь снарядов (цвет | BOMB), длиной queueCount
+    private currentColor = 0;          // заряженный снаряд (цвет | BOMB)
 
     private hud: Hud = null!;
     private packshot: Packshot = null!;
+
+    // danger line (только драма)
+    private dangerY = 0;
+    private dangerOp: UIOpacity = null!;
+    private dangerTimer = 0;
+    private dangerPhase = 0;
+    private wasDanger = false;
 
     private state = State.AIMING;
     private score = 0;
@@ -72,6 +100,7 @@ export class Game extends Component {
     private shake = 0;
     private shakeMag = 0;
     private timeScale = 1;
+    private trailTimer = 0;
 
     // прицел
     private aiming = false;
@@ -87,9 +116,16 @@ export class Game extends Component {
         Assets.logo = this.logoSprite;
         Assets.progressBg = this.progressBgSprite;
         Assets.progressFill = this.progressFillSprite;
+        Assets.bombFrames = this.bombFrames;
+        Assets.bomb = this.bombSprite;
         Assets.popSound = this.popSound;
+        Assets.bounceSound = this.bounceSound;
+        Assets.music = this.music;
+        Assets.winSound = this.winSound;
 
         this.audio = this.node.addComponent(AudioSource);
+        Sfx.init(this.audio);
+        this.startMusic();
 
         const ui = this.node.getComponent(UITransform);
         if (ui) { this.W = ui.contentSize.width; this.H = ui.contentSize.height; }
@@ -97,13 +133,19 @@ export class Game extends Component {
         this.left = -this.W / 2 + CFG.sideFrame + CFG.sideMargin + CFG.bubbleRadius;
         this.right = this.W / 2 - CFG.sideFrame - CFG.sideMargin - CFG.bubbleRadius;
         this.top = this.H / 2 - CFG.topMargin;
-        this.launcherY = -this.H / 2 + CFG.bottomMargin;
+        // позиция пуска: из ноды-превью (если задана в редакторе) либо из конфига
+        this.launcherY = this.launcherNode
+            ? this.launcherNode.position.y
+            : -this.H / 2 + CFG.bottomMargin;
+        if (this.launcherNode) this.launcherNode.active = false;  // это лишь превью для редактора
 
         this.buildBackground();
 
         this.world = new Node('World');
         this.node.addChild(this.world);
         this.world.addComponent(UITransform);
+
+        this.buildDangerLine();
 
         const fxLayer = new Node('Fx');
         this.world.addChild(fxLayer);
@@ -119,15 +161,16 @@ export class Game extends Component {
         this.packshot = new Packshot(this.node, this.W, this.H);
 
         // Пусковой шар создаём ДО спавна поля — чтобы он гарантированно был,
-        // даже если что-то в спавне пойдёт не так. Цвет умеет браться при пустом поле.
+        // даже если что-то в спавне пойдёт не так.
         this.buildLauncher();
         this.spawnInitial();
 
-        // поле готово — берём цвета из него (гарантия, что есть что лопать)
+        // поле готово — заряжаем цветной шар (не бомбу для обучаемости) и набиваем очередь
         this.currentColor = this.pickFieldColor();
-        this.nextColor = this.pickFieldColor();
-        this.launcher.setColorIndex(this.currentColor);
-        this.nextPreview.setColorIndex(this.nextColor);
+        this.queue = [];
+        for (let i = 0; i < CFG.queueCount; i++) this.queue.push(this.pickNextShot());
+        this.applyShot(this.launcher, this.currentColor, true);
+        this.updatePreviews();
 
         this.node.on(Node.EventType.TOUCH_START, this.onTouchStart, this);
         this.node.on(Node.EventType.TOUCH_MOVE, this.onTouchMove, this);
@@ -138,6 +181,9 @@ export class Game extends Component {
     // ---------- Построение сцены ----------
 
     private buildBackground() {
+        // если фон уже есть отдельной нодой в сцене (видимой в редакторе) — код свой не строит
+        if (this.bgNode) return;
+
         const bg = new Node('Bg');
         this.node.addChild(bg);
         bg.setSiblingIndex(0);
@@ -174,14 +220,45 @@ export class Game extends Component {
     }
 
     private buildLauncher() {
-        this.currentColor = this.pickFieldColor();
-        this.nextColor = this.pickFieldColor();
-
-        this.launcher = new Bubble(this.world, this.currentColor, CFG.bubbleRadius);
+        this.launcher = new Bubble(this.world, 0, CFG.bubbleRadius * CFG.launcherScale);
         this.launcher.setPos(0, this.launcherY);
+        this.launcher.startReadyPulse();           // «дыхание» заряженного шара
 
-        this.nextPreview = new Bubble(this.world, this.nextColor, CFG.bubbleRadius * 0.55);
-        this.nextPreview.setPos(this.W * 0.28, this.launcherY - 10);
+        // очередь превью следующих снарядов: горизонтальный ряд правее пушки
+        const pr = CFG.bubbleRadius * CFG.previewScale;
+        this.previews = [];
+        for (let i = 0; i < CFG.queueCount; i++) {
+            const b = new Bubble(this.world, 0, pr);
+            b.setPos(CFG.previewX0 + i * CFG.previewGap, this.launcherY);
+            b.startIdle();                          // лёгкое покачивание следующих
+            this.previews.push(b);
+        }
+    }
+
+    /** Пунктирная danger-линия над пушкой (только драма, без проигрыша). */
+    private buildDangerLine() {
+        this.dangerY = this.launcherY + CFG.dangerLineOffset;
+        const n = new Node('Danger');
+        this.world.addChild(n);
+        n.addComponent(UITransform);
+        const g = n.addComponent(Graphics);
+        // мягкое свечение-полоса
+        g.fillColor = new Color(255, 50, 50, 45);
+        g.rect(this.left - CFG.bubbleRadius, this.dangerY - 10,
+            (this.right - this.left) + CFG.bubbleRadius * 2, 20);
+        g.fill();
+        // пунктир
+        g.lineWidth = 4;
+        g.strokeColor = new Color(255, 70, 70, 255);
+        const x0 = this.left - CFG.bubbleRadius;
+        const x1 = this.right + CFG.bubbleRadius;
+        for (let x = x0; x < x1; x += 34) {
+            g.moveTo(x, this.dangerY);
+            g.lineTo(Math.min(x + 20, x1), this.dangerY);
+        }
+        g.stroke();
+        this.dangerOp = n.addComponent(UIOpacity);
+        this.dangerOp.opacity = 60;
     }
 
     // ---------- Спавн поля ----------
@@ -229,6 +306,7 @@ export class Game extends Component {
                 const dist = r * math.randomRange(CFG.clusterPackMin, CFG.clusterPackMax);
                 const x = math.clamp(base.x + Math.cos(ang) * dist, this.left, this.right);
                 const y = base.y + Math.sin(ang) * dist;
+                if (y > this.top) continue;    // потолок: кучка растёт только под прогресс-баром
                 const okSiblings = pts.every((p) => Math.hypot(p.x - x, p.y - y) >= r * 1.4);
                 if (okSiblings && this.isFreeOfForeign(x, y, foreign)) {
                     pts.push({ x, y });
@@ -241,6 +319,8 @@ export class Game extends Component {
         for (const p of pts) {
             const b = new Bubble(this.world, colorIndex, r);
             b.setPos(p.x, p.y);
+            b.playSpawn();
+            b.startIdle();
             this.bubbles.push(b);
         }
     }
@@ -250,6 +330,27 @@ export class Game extends Component {
         if (this.bubbles.length === 0) return math.randomRangeInt(0, BUBBLE_COLORS.length);
         const b = this.bubbles[math.randomRangeInt(0, this.bubbles.length)];
         return b.colorIndex;
+    }
+
+    /** Следующий снаряд в очередь: иногда бомба, иначе цвет с поля. */
+    private pickNextShot(): number {
+        return Math.random() < CFG.bombChance ? BOMB : this.pickFieldColor();
+    }
+
+    /**
+     * Применить дескриптор снаряда к шару (цвет или бомба).
+     * @param animateBomb крутить анимацию бомбы (пушка/полёт) или показать статичный кадр (превью).
+     */
+    private applyShot(bubble: Bubble, shot: number, animateBomb: boolean) {
+        if (shot === BOMB) bubble.setBomb(animateBomb);
+        else bubble.setColorIndex(shot);
+    }
+
+    /** Перерисовать ряд превью по текущей очереди (превью-бомбы — статичный 1-й кадр). */
+    private updatePreviews() {
+        for (let i = 0; i < this.previews.length; i++) {
+            this.applyShot(this.previews[i], this.queue[i], false);
+        }
     }
 
     // ---------- Ввод / прицел ----------
@@ -330,22 +431,26 @@ export class Game extends Component {
     }
 
     private launch() {
-        const p = new Bubble(this.world, this.currentColor, CFG.bubbleRadius);
+        const isBomb = this.currentColor === BOMB;
+        const p = new Bubble(this.world, isBomb ? 0 : this.currentColor, CFG.bubbleRadius);
+        if (isBomb) p.setBomb();
         p.isProjectile = true;
         p.setPos(0, this.launcherY);
         p.vel.set(this.aimDir.x * CFG.projSpeed, this.aimDir.y * CFG.projSpeed);
         this.projectile = p;
+        this.trailTimer = 0;
         this.state = State.FLYING;
         this.launcher.node.active = false;
     }
 
     private reload() {
-        this.currentColor = this.nextColor;
-        this.nextColor = this.pickFieldColor();
-        this.launcher.setColorIndex(this.currentColor);
+        // сдвигаем очередь: заряжаем ближайший, добираем новый в хвост
+        this.currentColor = this.queue.shift()!;
+        this.queue.push(this.pickNextShot());
+        this.applyShot(this.launcher, this.currentColor, true);
         this.launcher.setPos(0, this.launcherY);
         this.launcher.node.active = true;
-        this.nextPreview.setColorIndex(this.nextColor);
+        this.updatePreviews();
         this.state = State.AIMING;
     }
 
@@ -380,7 +485,8 @@ export class Game extends Component {
             this.spawnTimer = 0;
             this.spawnCluster();
         }
-        // HOOK: тут можно проверить пересечение danger-линии для «почти проигрыша».
+
+        this.updateDanger(dt);
 
         // полёт снаряда
         if (this.state === State.FLYING && this.projectile) {
@@ -395,9 +501,16 @@ export class Game extends Component {
         let nx = p.pos.x + p.vel.x * dt;
         let ny = p.pos.y + p.vel.y * dt;
 
-        if (nx < this.left) { nx = this.left; p.vel.x = -p.vel.x; }
-        else if (nx > this.right) { nx = this.right; p.vel.x = -p.vel.x; }
+        if (nx < this.left) { nx = this.left; p.vel.x = -p.vel.x; this.playBounce(); }
+        else if (nx > this.right) { nx = this.right; p.vel.x = -p.vel.x; this.playBounce(); }
         p.setPos(nx, ny);
+
+        // трейл: роняем гаснущие призраки с фиксированным шагом по времени
+        this.trailTimer += dt;
+        while (this.trailTimer >= CFG.trailInterval) {
+            this.trailTimer -= CFG.trailInterval;
+            Fx.trail(nx, ny, p.color, CFG.bubbleRadius * 0.72);
+        }
 
         // улетел вверх — промах
         if (ny > this.top + CFG.bubbleRadius * 2) {
@@ -412,19 +525,83 @@ export class Game extends Component {
             if (!b.alive) continue;
             const d = Math.hypot(nx - b.pos.x, ny - b.pos.y);
             if (d <= CFG.bubbleRadius + b.radius) {
-                if (b.colorIndex === p.colorIndex) {
+                if (p.isBomb) {
+                    this.explodeArea(nx, ny);         // бомба сносит область любых цветов
+                } else if (b.colorIndex === p.colorIndex) {
                     this.onMatch(b, nx, ny);
                 } else {
-                    // «дад» — промах по чужому цвету
-                    Fx.flash(nx, ny, CFG.bubbleRadius * 0.6);
-                    this.addShake(CFG.shakeSmall * 0.5);
-                    p.destroy();
-                    this.projectile = null;
-                    this.reload();
+                    this.stickProjectile(p, b, nx, ny);  // чужой цвет — прилипает к кластеру
                 }
                 return;
             }
         }
+    }
+
+    /** Подрыв бомбы: сносит все шары в радиусе, независимо от цвета. */
+    private explodeArea(hx: number, hy: number) {
+        this.projectile!.destroy();
+        this.projectile = null;
+
+        const hits = this.bubbles.filter(
+            (b) => b.alive && Math.hypot(hx - b.pos.x, hy - b.pos.y) <= CFG.bombRadius,
+        );
+        for (const b of hits) b.alive = false;
+        this.bubbles = this.bubbles.filter((b) => b.alive);
+
+        // очки (с бонусом бомбы), считаем сразу
+        let gained = 0;
+        for (const b of hits) {
+            gained += Math.round(
+                math.randomRange(CFG.scorePerBubbleMin, CFG.scorePerBubbleMax) * CFG.bombScoreMult,
+            );
+        }
+        this.score += gained;
+        this.hud.setScore(this.score);
+        this.hud.setProgress(this.score);
+
+        // бум: белая вспышка, кольцо, крупная тряска, низкий питч попа
+        Fx.flash(hx, hy, CFG.bombRadius * 0.55);
+        Fx.shockwave(hx, hy, new Color(255, 150, 60, 255), CFG.bombRadius);
+        this.addShake(CFG.shakeBig);
+        this.hitstop = CFG.hitstopBig;
+        Sfx.pop(Assets.popSound, 0.5, CFG.sfxVolume);
+
+        // осколки — волной от центра взрыва наружу, каждый своим цветом
+        hits.sort((a, b) =>
+            Math.hypot(hx - a.pos.x, hy - a.pos.y) - Math.hypot(hx - b.pos.x, hy - b.pos.y));
+        hits.forEach((b, i) => {
+            const node = b.node, px = b.pos.x, py = b.pos.y, col = b.color;
+            this.scheduleOnce(() => {
+                Fx.splash(px, py, col, CFG.bubbleRadius * 1.2);
+                if (node && node.isValid) node.destroy();
+            }, i * CFG.chainPopDelay * 0.6);
+        });
+
+        if (gained > 0) Fx.popup(hx, hy, `BOOM +${gained}`, new Color(255, 180, 80, 255), true);
+
+        this.checkWin();
+        if (this.state !== State.WON) this.reload();
+    }
+
+    /** Чужой цвет: снаряд встаёт вплотную к задетому шару и становится частью поля. */
+    private stickProjectile(p: Bubble, hitBall: Bubble, nx: number, ny: number) {
+        // отодвигаем на точку касания вдоль линии «задетый шар → снаряд»
+        const dx = nx - hitBall.pos.x, dy = ny - hitBall.pos.y;
+        const dist = Math.hypot(dx, dy) || 1;
+        const rest = CFG.bubbleRadius + hitBall.radius;
+        const sx = math.clamp(hitBall.pos.x + (dx / dist) * rest, this.left, this.right);
+        const sy = hitBall.pos.y + (dy / dist) * rest;
+
+        p.isProjectile = false;
+        p.vel.set(0, 0);
+        p.setPos(sx, sy);
+        p.startIdle();                      // теперь качается как остальные шары поля
+        this.bubbles.push(p);
+        this.projectile = null;
+
+        Fx.flash(sx, sy, CFG.bubbleRadius * 0.5);
+        this.addShake(CFG.shakeSmall * 0.5);
+        this.reload();
     }
 
     // ---------- Матч, комбо, splash ----------
@@ -539,12 +716,20 @@ export class Game extends Component {
             this.state = State.WON;
             this.aimGfx.clear();
             this.launcher.node.active = false;
+            for (const p of this.previews) p.node.active = false;
+            this.dangerOp.opacity = 0;
             // финальный каскад по всему полю → пекшот
             this.finalCascade();
         }
     }
 
     private finalCascade() {
+        // приглушаем музыку под финал и играем джингл победы
+        if (this.bgm && this.bgm.playing) {
+            tween(this.bgm).to(0.5, { volume: CFG.musicVolume * CFG.musicDuckOnWin }).start();
+        }
+        if (Assets.winSound) this.audio.playOneShot(Assets.winSound, CFG.winVolume);
+
         const all = this.bubbles.slice();
         all.forEach((b, i) => {
             this.scheduleOnce(() => {
@@ -558,13 +743,57 @@ export class Game extends Component {
         this.scheduleOnce(() => this.packshot.show(), all.length * 0.04 + 0.5);
     }
 
+    /** Драма danger-линии: пока нижние шары за ней — тряска + вспышка (без проигрыша). */
+    private updateDanger(dt: number) {
+        let lowest = Infinity;
+        for (const b of this.bubbles) {
+            if (b.alive) lowest = Math.min(lowest, b.pos.y - b.radius);
+        }
+        const inDanger = lowest <= this.dangerY;
+        this.dangerPhase += dt;
+        if (inDanger) {
+            // ярко и быстро пульсирует
+            const s = 0.5 + 0.5 * Math.sin(this.dangerPhase * 9);
+            this.dangerOp.opacity = Math.round(150 + 90 * s);
+            this.dangerTimer += dt;
+            if (this.dangerTimer >= CFG.dangerShakeEvery) {
+                this.dangerTimer = 0;
+                this.addShake(CFG.dangerShakeMag);
+            }
+            if (!this.wasDanger) {                     // фронт: только что пересекли
+                this.wasDanger = true;
+                Fx.popup(0, this.dangerY + 44, 'DANGER!', new Color(255, 60, 60, 255), true);
+            }
+        } else {
+            // спокойный тусклый пульс
+            const s = 0.5 + 0.5 * Math.sin(this.dangerPhase * 2);
+            this.dangerOp.opacity = Math.round(45 + 30 * s);
+            this.wasDanger = false;
+            this.dangerTimer = 0;
+        }
+    }
+
     // ---------- Juice helpers ----------
 
+    private playBounce() {
+        if (Assets.bounceSound) this.audio.playOneShot(Assets.bounceSound, CFG.sfxVolume);
+    }
+
+    private startMusic() {
+        this.bgm = this.node.addComponent(AudioSource);
+        if (!Assets.music) return;                 // нет трека → тишина (fallback)
+        this.bgm.clip = Assets.music;
+        this.bgm.loop = true;
+        this.bgm.volume = 0;
+        this.bgm.play();
+        // fade-in громкости
+        tween(this.bgm).to(CFG.musicFadeIn, { volume: CFG.musicVolume }).start();
+    }
+
     private playPop(combo: number) {
-        if (!Assets.popSound) return;
-        // Cocos AudioSource на web не даёт менять pitch — громкостью намекаем на силу удара.
-        // HOOK: восходящий питч по комбо через Web Audio, если нужно.
-        this.audio.playOneShot(Assets.popSound, Math.min(1, 0.6 + combo * 0.15));
+        // Восходящий питч по комбо (Web Audio); fallback внутри Sfx — громкостью.
+        const pitch = Math.min(CFG.popPitchMax, CFG.popPitchBase + (combo - 1) * CFG.popPitchStep);
+        Sfx.pop(Assets.popSound, pitch, CFG.sfxVolume);
     }
 
     private addShake(mag: number) {

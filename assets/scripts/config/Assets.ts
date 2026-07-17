@@ -8,6 +8,10 @@ import { SpriteFrame, Prefab, AudioClip } from 'cc';
 export class Assets {
     /** Спрайт шара: светлый/glossy, тинтуется цветом в коде. */
     static bubble: SpriteFrame | null = null;
+    /** Кадры покадровой анимации бомбы (приоритетнее одиночного `bomb`). */
+    static bombFrames: SpriteFrame[] = [];
+    /** Одиночный спрайт бомбы (fallback, если нет кадров; иначе Graphics-бомба). */
+    static bomb: SpriteFrame | null = null;
     /** Опциональный отдельный спрайт свечения (кладётся под тело, крупнее). */
     static bubbleGlow: SpriteFrame | null = null;
     /** Фон. */
@@ -24,4 +28,10 @@ export class Assets {
     static progressFill: SpriteFrame | null = null;
     /** Звук лопания. */
     static popSound: AudioClip | null = null;
+    /** Звук отскока снаряда от стен. */
+    static bounceSound: AudioClip | null = null;
+    /** Фоновая музыка (проигрывается в цикле). */
+    static music: AudioClip | null = null;
+    /** Джингл победы (играет при показе пекшота). */
+    static winSound: AudioClip | null = null;
 }

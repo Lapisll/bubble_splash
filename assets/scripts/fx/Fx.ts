@@ -40,6 +40,22 @@ export class Fx {
         }
     }
 
+    /** Призрак-трейл летящего снаряда: мягкий круг, быстро гаснет и сжимается. */
+    static trail(x: number, y: number, color: Color, radius: number) {
+        const n = new Node('trail');
+        Fx.layer.addChild(n);
+        n.addComponent(UITransform);
+        const g = n.addComponent(Graphics);
+        g.fillColor = new Color(color.r, color.g, color.b, 120);
+        g.circle(0, 0, radius);
+        g.fill();
+        n.setPosition(x, y, 0);
+        const op = n.addComponent(UIOpacity);
+        op.opacity = 120;
+        tween(n).to(CFG.trailFade, { scale: new Vec3(0.3, 0.3, 1) }, { easing: 'quadOut' }).start();
+        tween(op).to(CFG.trailFade, { opacity: 0 }).call(() => n.isValid && n.destroy()).start();
+    }
+
     /** Взрыв частиц в точке (осколки кластера). */
     static burst(x: number, y: number, color: Color, count = 18) {
         for (let i = 0; i < count; i++) {
